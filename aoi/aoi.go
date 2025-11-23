@@ -43,6 +43,7 @@ type Manager struct {
 	grids      [][]*Grid // 整个地图划分的格子
 	maxX, maxZ int
 	gridSize   int
+	entities   map[uint32]*Entity
 
 	interests map[uint32]Set[uint32]        // key=实体ID ，value=感兴趣的实体
 	delayDel  map[uint32]map[uint32]float32 // x 秒后才真正从视野中删除 （为了缓解频繁重复进出同一个AOI而触发大量事件回调的压力）
@@ -59,6 +60,7 @@ func NewManager(gridSize, maxX, maxZ int) *Manager {
 		grids:     make([][]*Grid, maxX/gridSize+1),
 		interests: make(map[uint32]Set[uint32]),        // todo
 		delayDel:  make(map[uint32]map[uint32]float32), // todo
+		entities:  make(map[uint32]*Entity),
 	}
 	for i := range m.grids {
 		m.grids[i] = make([]*Grid, maxZ/gridSize+1)
@@ -90,7 +92,8 @@ func (m *Manager) getGridByPos(pos *Position) *Grid {
 	return m.grids[row][col]
 }
 
-func (m *Manager) foreachSurroundEntities(pos *Position, f func(entity *Entity)) {
+func (m *Manager) foreachSurroundEntities(pos *Position, f func(entity *Entity), exclude uint32) {
+
 	row := int(pos.X) / m.gridSize
 	col := int(pos.Z) / m.gridSize
 	for i := row - 1; i <= row+1; i++ {
@@ -99,6 +102,9 @@ func (m *Manager) foreachSurroundEntities(pos *Position, f func(entity *Entity))
 				continue
 			}
 			for _, e := range m.grids[i][j].entities {
+				if e.GetID() == exclude {
+					continue
+				}
 				f(e)
 			}
 		}
@@ -114,13 +120,14 @@ func (m *Manager) AddEntity(entity *Entity) {
 		return
 	}
 	grid.entities[entity.GetID()] = entity
+	m.entities[entity.GetID()] = entity
 	m.foreachSurroundEntities(entity.pos, func(e *Entity) {
 		m.onEnter(entity, e)
 		if m.onEnterAOI != nil {
 			m.onEnterAOI(entity.GetID(), e.GetID())
 		}
 
-	})
+	}, entity.GetID())
 }
 
 func (m *Manager) RemoveEntity(entity *Entity) {
@@ -132,26 +139,23 @@ func (m *Manager) RemoveEntity(entity *Entity) {
 		return
 	}
 	delete(grid.entities, entity.GetID())
+	delete(m.entities, entity.GetID())
 	m.foreachSurroundEntities(entity.pos, func(e *Entity) {
 		if m.onLeaveAOI != nil {
 			m.onLeaveAOI(entity.GetID(), e.GetID())
 		}
 		m.onLeave(entity, e)
-	})
+	}, entity.GetID())
 }
 
 func (m *Manager) MoveEntity(id uint32, pos *Position) {
-	grid := m.getGridByPos(pos)
-	if grid == nil {
-		return
-	}
-	entity := grid.entities[id]
+	entity := m.entities[id]
 	if entity == nil {
 		return
 	}
 	oldGrid := m.getGridByPos(entity.pos)
 	newGrid := m.getGridByPos(pos)
-	if oldGrid == newGrid {
+	if oldGrid == nil || newGrid == nil || oldGrid == newGrid {
 		return
 	}
 	delete(oldGrid.entities, id)
@@ -160,10 +164,10 @@ func (m *Manager) MoveEntity(id uint32, pos *Position) {
 	newAOI := NewSet[*Entity]()
 	m.foreachSurroundEntities(entity.pos, func(e *Entity) {
 		oldAOI.Add(e)
-	})
+	}, entity.GetID())
 	m.foreachSurroundEntities(pos, func(e *Entity) {
 		newAOI.Add(e)
-	})
+	}, entity.GetID())
 	oldAOI.ForEach(func(other *Entity) {
 
 		if !newAOI.Contains(other) {

@@ -36,3 +36,11 @@ func (s Set[T]) ForEach(f func(value T)) {
 		f(k)
 	}
 }
+
+func (s Set[T]) Values() []T {
+	values := make([]T, 0, s.Size())
+	for k := range s {
+		values = append(values, k)
+	}
+	return values
+}
