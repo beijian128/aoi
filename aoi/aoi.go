@@ -1,6 +1,6 @@
 package aoi
 
-const delaySeconds = 0.5
+const delaySeconds = 1.9
 
 type Position struct {
 	X, Z float32 // xz轴 平行于地面
@@ -180,8 +180,8 @@ func (m *Manager) MoveEntity(id uint32, pos *Position) {
 	})
 	newAOI.ForEach(func(other *Entity) {
 		if !oldAOI.Contains(other) {
-			m.onEnter(entity, other)
-			if m.onEnterAOI != nil {
+
+			if m.onEnter(entity, other) && m.onEnterAOI != nil {
 				m.onEnterAOI(entity.GetID(), other.GetID())
 			}
 		}
@@ -212,19 +212,24 @@ func (m *Manager) GetAOI(self uint32) Set[uint32] {
 	return m.interests[self]
 }
 
-func (m *Manager) onEnter(e1, e2 *Entity) {
-	addInterest := func(e1, e2 *Entity) {
+func (m *Manager) onEnter(e1, e2 *Entity) bool {
+	addInterest := func(e1, e2 *Entity) bool {
 		if !e1.IsActor() {
-			return
+			return false
 		}
 		if m.interests[e1.GetID()] == nil {
 			m.interests[e1.GetID()] = NewSet[uint32]()
 		}
+		if m.interests[e1.GetID()].Contains(e2.GetID()) {
+			delete(m.delayDel[e1.GetID()], e2.GetID())
+			return false
+		}
 		m.interests[e1.GetID()].Add(e2.GetID())
-		delete(m.delayDel[e1.GetID()], e2.GetID())
+		return true
 	}
-	addInterest(e1, e2)
-	addInterest(e2, e1)
+	b1 := addInterest(e1, e2)
+	b2 := addInterest(e2, e1)
+	return b1 || b2
 }
 func (m *Manager) onLeave(e1, e2 *Entity) {
 	delayDelFunc := func(e1, e2 *Entity) {
