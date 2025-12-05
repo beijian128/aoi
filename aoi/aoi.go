@@ -1,5 +1,7 @@
 package aoi
 
+import "github.com/beijian128/aoi/common"
+
 const delaySeconds = 1.9
 
 type Position struct {
@@ -45,7 +47,7 @@ type Manager struct {
 	gridSize   int
 	entities   map[uint32]*Entity
 
-	interests map[uint32]Set[uint32]        // key=实体ID ，value=感兴趣的实体
+	interests map[uint32]common.Set[uint32] // key=实体ID ，value=感兴趣的实体
 	delayDel  map[uint32]map[uint32]float32 // x 秒后才真正从视野中删除 （为了缓解频繁重复进出同一个AOI而触发大量事件回调的压力）
 
 	onEnterAOI func(self, other uint32)
@@ -58,7 +60,7 @@ func NewManager(gridSize, maxX, maxZ int) *Manager {
 		maxX:      maxX,
 		maxZ:      maxZ,
 		grids:     make([][]*Grid, maxX/gridSize+1),
-		interests: make(map[uint32]Set[uint32]),        // todo
+		interests: make(map[uint32]common.Set[uint32]), // todo
 		delayDel:  make(map[uint32]map[uint32]float32), // todo
 		entities:  make(map[uint32]*Entity),
 	}
@@ -160,8 +162,8 @@ func (m *Manager) MoveEntity(id uint32, pos *Position) {
 	}
 	delete(oldGrid.entities, id)
 
-	oldAOI := NewSet[*Entity]()
-	newAOI := NewSet[*Entity]()
+	oldAOI := common.NewSet[*Entity]()
+	newAOI := common.NewSet[*Entity]()
 	m.foreachSurroundEntities(entity.pos, func(e *Entity) {
 		oldAOI.Add(e)
 	}, entity.GetID())
@@ -208,7 +210,7 @@ func (m *Manager) IsInAOI(self, other uint32) bool {
 	}
 	return m.interests[self].Contains(other)
 }
-func (m *Manager) GetAOI(self uint32) Set[uint32] {
+func (m *Manager) GetAOI(self uint32) common.Set[uint32] {
 	return m.interests[self]
 }
 
@@ -218,7 +220,7 @@ func (m *Manager) onEnter(e1, e2 *Entity) bool {
 			return false
 		}
 		if m.interests[e1.GetID()] == nil {
-			m.interests[e1.GetID()] = NewSet[uint32]()
+			m.interests[e1.GetID()] = common.NewSet[uint32]()
 		}
 		if m.interests[e1.GetID()].Contains(e2.GetID()) {
 			delete(m.delayDel[e1.GetID()], e2.GetID())
