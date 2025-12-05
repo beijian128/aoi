@@ -214,6 +214,20 @@ func (m *Manager) removeInterest(e1, e2 *Entity) {
 func (m *Manager) onEnter(e1, e2 *Entity) {
 	m.addInterest(e1, e2)
 	m.addInterest(e2, e1)
+	e1.beSubscribed.ForEach(func(id uint32) bool {
+		e := m.entities[id]
+		if e != nil {
+			m.addInterest(e, e2)
+		}
+		return false
+	})
+	e2.beSubscribed.ForEach(func(id uint32) bool {
+		e := m.entities[id]
+		if e != nil {
+			m.addInterest(e, e1)
+		}
+		return false
+	})
 }
 
 func (m *Manager) onLeave(e1, e2 *Entity) {
@@ -225,9 +239,15 @@ func (m *Manager) onLeave(e1, e2 *Entity) {
 // 一个可能的应用场景：MOBA游戏，玩家控制的角色插眼 ，玩家的视野变为角色的视野加上眼的视野，让角色实体订阅“眼”实体即可
 // 订阅不具有传递性，仅将被订阅目标的原始视野合并到订阅者上
 func (m *Manager) Subscribe(eid1, eid2 uint32) {
+	if eid1 == eid2 {
+		return
+	}
 	e1 := m.entities[eid1]
 	e2 := m.entities[eid2]
 	if e1 == nil || e2 == nil {
+		return
+	}
+	if e2.beSubscribed.Contains(e1.GetID()) {
 		return
 	}
 	e2.beSubscribed.Add(e1.GetID())
@@ -239,9 +259,15 @@ func (m *Manager) Subscribe(eid1, eid2 uint32) {
 }
 
 func (m *Manager) Unsubscribe(eid1, eid2 uint32) {
+	if eid1 == eid2 {
+		return
+	}
 	e1 := m.entities[eid1]
 	e2 := m.entities[eid2]
 	if e1 == nil || e2 == nil {
+		return
+	}
+	if !e2.beSubscribed.Contains(e1.GetID()) {
 		return
 	}
 	e2.beSubscribed.Remove(e1.GetID())
