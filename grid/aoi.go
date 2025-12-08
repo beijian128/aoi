@@ -1,4 +1,4 @@
-package aoi
+package grid
 
 import (
 	"github.com/beijian128/aoi/common"
