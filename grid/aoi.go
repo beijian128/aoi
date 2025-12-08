@@ -63,7 +63,7 @@ func NewManager(gridSize, minX, minZ, maxX, maxZ int) *Manager {
 		rowNum:    (maxX-minX)/gridSize + 1,
 		columnNum: (maxZ-minZ)/gridSize + 1,
 	}
-	m.grids = append(m.grids, make([]*Grid, m.rowNum))
+	m.grids = make([][]*Grid, m.rowNum)
 	for i := range m.grids {
 		m.grids[i] = make([]*Grid, m.columnNum)
 		for j := range m.grids[i] {
@@ -114,7 +114,7 @@ func (m *Manager) findSurroundEntities(e *Entity) common.Set[*Entity] {
 				if v.GetID() == e.GetID() {
 					continue
 				}
-				set.Add(e)
+				set.Add(v)
 			}
 		}
 	}
@@ -155,11 +155,25 @@ func (m *Manager) MoveEntity(id uint32, pos *Position) {
 	if entity == nil {
 		return
 	}
+
+	oldRow, oldCol := m.getGridIndexByPos(entity.GetPos())
+	newRow, newCol := m.getGridIndexByPos(pos)
+	if oldRow == newRow && oldCol == newCol {
+		entity.SetPos(pos)
+		return
+	}
+
 	oldAOI := m.findSurroundEntities(entity)
+
+	delete(m.grids[oldRow][oldCol].entities, entity.GetID())
+	m.grids[newRow][newCol].entities[entity.GetID()] = entity
+
 	entity.SetPos(pos)
 	newAOI := m.findSurroundEntities(entity)
+
 	leaveSet := oldAOI.Difference(newAOI)
 	enterSet := newAOI.Difference(oldAOI)
+
 	leaveSet.ForEach(func(other *Entity) bool {
 		m.onLeave(entity, other)
 		return false
@@ -233,6 +247,21 @@ func (m *Manager) onEnter(e1, e2 *Entity) {
 func (m *Manager) onLeave(e1, e2 *Entity) {
 	m.removeInterest(e1, e2)
 	m.removeInterest(e2, e1)
+
+	e1.beSubscribed.ForEach(func(id uint32) bool {
+		e := m.entities[id]
+		if e != nil {
+			m.removeInterest(e, e2)
+		}
+		return false
+	})
+	e2.beSubscribed.ForEach(func(id uint32) bool {
+		e := m.entities[id]
+		if e != nil {
+			m.removeInterest(e, e1)
+		}
+		return false
+	})
 }
 
 // Subscribe e1 订阅 e2 . 进入e2视野的实体将同时进入e1的视野

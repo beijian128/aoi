@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>九宫格 AOI 可视化</title>
+    <style>
+        body {
+            background-color: #1f1f1f;
+            color: #eee;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            font-family: sans-serif;
+        }
+        canvas {
+            background-color: #2a2a2a;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            cursor: crosshair;
+        }
+        .legend {
+            margin-top: 10px;
+            display: flex;
+            gap: 20px;
+        }
+        .item { display: flex; align-items: center; gap: 5px; }
+        .dot { width: 12px; height: 12px; border-radius: 50%; }
+    </style>
+</head>
+<body>
+<h1>AOI 九宫格订阅演示</h1>
+<p>点击地图移动蓝色主角。主角订阅了绿色眼的视野。</p>
+<canvas id="gameCanvas" width="600" height="600"></canvas>
+
+<div class="legend">
+    <div class="item"><div class="dot" style="background:#1890ff"></div>主角 (Player)</div>
+    <div class="item"><div class="dot" style="background:#52c41a"></div>眼 (Ward)</div>
+    <div class="item"><div class="dot" style="background:#ff4d4f"></div>路人 (NPC)</div>
+</div>
+<div class="legend">
+    <div class="item" style="color: #1890ff">——— 主角自身视野</div>
+    <div class="item" style="color: #52c41a">——— 眼的视野</div>
+    <div class="item" style="color: #ffff00">——— 订阅共享视野(主角通过眼看到的)</div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const gridSize = 50;
+    const mapSize = 600;
+
+    // WebSocket 连接
+    const ws = new WebSocket("ws://" + window.location.host + "/ws");
+
+    let currentState = { entities: [], lines: [] };
+
+    ws.onmessage = (event) => {
+        currentState = JSON.parse(event.data);
+        draw();
+    };
+
+    // 鼠标点击移动主角
+    canvas.addEventListener('mousedown', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        ws.send(JSON.stringify({ x: x, z: y }));
+    });
+
+    // 也可以拖拽移动
+    canvas.addEventListener('mousemove', (e) => {
+        if (e.buttons === 1) { // 左键按下
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            ws.send(JSON.stringify({ x: x, z: y }));
+        }
+    });
+
+    function draw() {
+        ctx.clearRect(0, 0, mapSize, mapSize);
+
+        // 1. 画网格
+        ctx.strokeStyle = '#3a3a3a';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let x = 0; x <= mapSize; x += gridSize) {
+            ctx.moveTo(x, 0); ctx.lineTo(x, mapSize);
+        }
+        for (let y = 0; y <= mapSize; y += gridSize) {
+            ctx.moveTo(0, y); ctx.lineTo(mapSize, y);
+        }
+        ctx.stroke();
+
+        // 2. 画视野连线
+        if (currentState.lines) {
+            currentState.lines.forEach(line => {
+                ctx.strokeStyle = line.color;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(line.from_x, line.from_z);
+                ctx.lineTo(line.to_x, line.to_z);
+                ctx.stroke();
+            });
+        }
+
+        // 3. 画实体
+        if (currentState.entities) {
+            currentState.entities.forEach(e => {
+                ctx.fillStyle = e.color;
+                ctx.beginPath();
+                // 如果是主角或眼，画大一点
+                const r = (e.type === 'npc') ? 4 : 8;
+                ctx.arc(e.x, e.z, r, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 画 ID
+                ctx.fillStyle = "#fff";
+                ctx.font = "10px Arial";
+                ctx.fillText(e.id, e.x + 8, e.z - 8);
+
+                // 画九宫格范围框（仅主角）
+                if (e.type === 'player') {
+                    drawAOIBounds(e.x, e.z);
+                }
+            });
+        }
+    }
+
+    // 辅助：画出主角所在的九宫格区域
+    function drawAOIBounds(x, z) {
+        const row = Math.floor(x / gridSize);
+        const col = Math.floor(z / gridSize);
+
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
+
+        // 九宫格范围 (row-1, col-1) 到 (row+2, col+2)
+        const startX = (row - 1) * gridSize;
+        const startY = (col - 1) * gridSize;
+        const w = gridSize * 3;
+        const h = gridSize * 3;
+
+        ctx.fillRect(startX, startY, w, h);
+        ctx.strokeRect(startX, startY, w, h);
+    }
+</script>
+</body>
+</html>
