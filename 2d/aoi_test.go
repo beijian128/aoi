@@ -16,7 +16,6 @@ import (
 
 func TestAOI(t *testing.T) {
 	mgr = NewManager(GridSize, 0, 0, MapSize, MapSize)
-
 	for i := 1; i <= 20; i++ {
 		mgr.AddEntity(aoi.EntityID(i), getRandPos(), 0)
 	}
@@ -28,12 +27,13 @@ func TestAOI(t *testing.T) {
 	mgr.AddEntity(wardId, getRandPos(), 0)
 	mgr.Subscribe(pid, wardId)
 	go simulationLoop()
+	fs := http.FileServer(http.Dir("./static"))
+	http.Handle("/static/", http.StripPrefix("/static/", fs))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "index.html")
+		http.Redirect(w, r, "/static/index.html", http.StatusFound)
 	})
 	http.HandleFunc("/ws", handleWS)
 	fmt.Printf("服务启动: http://localhost%s\n", Port)
-	fmt.Println("蓝色是主角，绿色是眼(被订阅)，红色是NPC")
 	time.AfterFunc(time.Millisecond*100, func() {
 		cmd := exec.Command("cmd", "/c", "start ", fmt.Sprintf(" http://localhost%s", Port))
 		cmd.Start()
@@ -53,14 +53,14 @@ var upgrader = websocket.Upgrader{
 
 type Snapshot struct {
 	Entities []EntityDTO `json:"entities"`
-	Lines    []LineDTO   `json:"lines"` // 视野连线
+	Lines    []LineDTO   `json:"lines"`
 }
 
 type EntityDTO struct {
 	ID    aoi.EntityID `json:"id"`
 	X     aoi.Float    `json:"x"`
 	Z     aoi.Float    `json:"z"`
-	Type  string       `json:"type"` // "player", "npc", "ward"
+	Type  string       `json:"type"`
 	Color string       `json:"color"`
 }
 
@@ -99,9 +99,8 @@ func simulationLoop() {
 
 					angle := rand.Float64() * 2 * math.Pi
 					state = &NPCState{
-						vx: aoi.Float(math.Cos(angle)) * speed,
-						vz: aoi.Float(math.Sin(angle)) * speed,
-						// 随机走 1 到 4 秒后再换方向
+						vx:         aoi.Float(math.Cos(angle)) * speed,
+						vz:         aoi.Float(math.Sin(angle)) * speed,
 						changeTime: time.Now().Add(time.Duration(rand.Intn(3000)+1000) * time.Millisecond),
 					}
 					npcStates[id] = state
@@ -112,11 +111,11 @@ func simulationLoop() {
 				newZ := pos.Z + state.vz
 
 				if newX <= 0 || newX >= MapSize {
-					state.vx = -state.vx    // X轴速度反转
-					newX = pos.X + state.vx // 重新计算位置
+					state.vx = -state.vx
+					newX = pos.X + state.vx
 				}
 				if newZ <= 0 || newZ >= MapSize {
-					state.vz = -state.vz // Z轴速度反转
+					state.vz = -state.vz
 					newZ = pos.Z + state.vz
 				}
 
@@ -134,7 +133,6 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	// 监听前端控制消息（控制主角移动）
 	go func() {
 		for {
 			var msg struct {
@@ -145,7 +143,6 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			mu.Lock()
-			// 移动主角 ID 100
 			if _, ok := mgr.entities[100]; ok {
 				mgr.MoveEntity(100, &aoi.Position{X: msg.X, Z: msg.Z})
 			}
@@ -153,7 +150,6 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// 发送状态给前端
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -176,14 +172,14 @@ func buildSnapshot() Snapshot {
 	for id, e := range mgr.entities {
 		pos := e.GetPos()
 		eType := "npc"
-		color := "#ff4d4f" // 红
+		color := "#ff4d4f"
 
 		if id == 100 {
 			eType = "player"
-			color = "#1890ff" // 蓝
+			color = "#1890ff"
 		} else if id == 200 {
 			eType = "ward"
-			color = "#52c41a" // 绿
+			color = "#52c41a"
 		}
 
 		snap.Entities = append(snap.Entities, EntityDTO{
@@ -194,24 +190,20 @@ func buildSnapshot() Snapshot {
 			Color: color,
 		})
 
-		// 获取 AOI 列表生成连线
-		// 为了不让画面太乱，只画 主角(100) 和 眼(200) 看到的物体
 		if id == 100 || id == 200 {
 			rawAoiSet := mgr.findSurroundEntities(e)
 			aoiSet := mgr.GetView(aoi.PlayerID(id))
 			aoiSet.ForEach(func(targetID aoi.EntityID) bool {
 				target := mgr.entities[targetID]
 				if target != nil {
-					lineColor := "rgba(24, 144, 255, 0.3)" // 默认蓝色连线
+					lineColor := "rgba(24, 144, 255, 0.3)"
 					if id == 200 {
-						lineColor = "rgba(82, 196, 26, 0.3)" // 眼的视野是绿色连线
+						lineColor = "rgba(82, 196, 26, 0.3)"
 					}
 
-					// 如果是主角(100)看到了目标，但这个目标实际上是在眼(200)的周围
-					// 这证明了 subscribe 功能生效
 					if id == 100 {
 						if !rawAoiSet.Contains(target) {
-							lineColor = "rgba(255, 255, 0, 0.5)" // 黄色表示共享视野
+							lineColor = "rgba(255, 255, 0, 0.5)"
 						}
 					}
 

@@ -131,8 +131,15 @@ func main() {
 
 	go gameLoop()
 
+	// 设置静态文件服务，将 /static/ 映射到 ./static 目录
+	fs := http.FileServer(http.Dir("./static"))
+
+	// 将 /static/ 路径下的请求交给 FileServer 处理
+	http.Handle("/static/", http.StripPrefix("/static/", fs))
+
+	// 设置根路径 / 重定向到 /static/index.html
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "index.html")
+		http.Redirect(w, r, "/static/index.html", http.StatusFound)
 	})
 
 	http.HandleFunc("/ws", handleWebSocket)
