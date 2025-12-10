@@ -2,6 +2,7 @@ package two_dim
 
 import (
 	"fmt"
+	"github.com/beijian128/aoi"
 	"github.com/gorilla/websocket"
 	"golang.org/x/exp/rand"
 	"log"
@@ -14,41 +15,23 @@ import (
 )
 
 func TestAOI(t *testing.T) {
-	// 1. 初始化 AOI 管理器
-	// 地图 0,0 到 600,600，格子大小 50
 	mgr = NewManager(GridSize, 0, 0, MapSize, MapSize)
-	mgr.RegisterEnterAOIHandler(func(self, other uint32) {
-		fmt.Printf("AOI: %d 进入 %d\n", self, other)
-	})
-	mgr.RegisterLeaveAOIHandler(func(self, other uint32) {
-		fmt.Printf("AOI: %d 离开 %d\n", self, other)
-	})
-	entities = make(map[uint32]*Entity)
 
-	// 2. 添加 NPC (红色，随机移动)
 	for i := 1; i <= 20; i++ {
-		addEntity(uint32(i), float32(rand.Intn(MapSize)), float32(rand.Intn(MapSize)), "npc")
+		mgr.AddEntity(aoi.EntityID(i), getRandPos(), 0)
 	}
-
-	// 3. 添加主角 (蓝色 ID: 100)
-	player := addEntity(100, 300, 300, "player")
-
-	// 4. 添加一个静止的“眼/守卫” (绿色 ID: 200)
-	ward := addEntity(200, 111.9, 111, "ward")
-
-	// 5. 让主角订阅眼的视野 (Subscribe 演示)
-	// 这样，在前端你即使离眼很远，也能看到眼周围的连线连接到主角身上（逻辑上）
-	mgr.Subscribe(player.GetID(), ward.GetID())
-
-	// 启动模拟循环
+	pid := aoi.PlayerID(100)
+	wardId := aoi.EntityID(200)
+	mgr.AddPlayer(pid)
+	mgr.AddEntity(aoi.EntityID(pid), getRandPos(), 0)
+	mgr.Subscribe(pid, aoi.EntityID(pid))
+	mgr.AddEntity(wardId, getRandPos(), 0)
+	mgr.Subscribe(pid, wardId)
 	go simulationLoop()
-
-	// 启动 Web 服务器
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "index.html")
 	})
 	http.HandleFunc("/ws", handleWS)
-
 	fmt.Printf("服务启动: http://localhost%s\n", Port)
 	fmt.Println("蓝色是主角，绿色是眼(被订阅)，红色是NPC")
 	time.AfterFunc(time.Millisecond*100, func() {
@@ -68,84 +51,66 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// 传输给前端的数据结构
 type Snapshot struct {
 	Entities []EntityDTO `json:"entities"`
 	Lines    []LineDTO   `json:"lines"` // 视野连线
 }
 
 type EntityDTO struct {
-	ID    uint32  `json:"id"`
-	X     float32 `json:"x"`
-	Z     float32 `json:"z"`
-	Type  string  `json:"type"` // "player", "npc", "ward"
-	Color string  `json:"color"`
+	ID    aoi.EntityID `json:"id"`
+	X     aoi.Float    `json:"x"`
+	Z     aoi.Float    `json:"z"`
+	Type  string       `json:"type"` // "player", "npc", "ward"
+	Color string       `json:"color"`
 }
 
 type LineDTO struct {
-	FromX float32 `json:"from_x"`
-	FromZ float32 `json:"from_z"`
-	ToX   float32 `json:"to_x"`
-	ToZ   float32 `json:"to_z"`
-	Color string  `json:"color"`
+	FromX aoi.Float `json:"from_x"`
+	FromZ aoi.Float `json:"from_z"`
+	ToX   aoi.Float `json:"to_x"`
+	ToZ   aoi.Float `json:"to_z"`
+	Color string    `json:"color"`
 }
 
-// 全局状态
 var (
-	mgr      *Manager
-	entities map[uint32]*Entity
-	mu       sync.Mutex
+	mgr *Manager
+	mu  sync.Mutex
 )
 
-func addEntity(id uint32, x, z float32, t string) *Entity {
-	pos := &Position{X: x, Z: z}
-	e := NewEntity(id, pos)
-
-	mgr.AddEntity(e)
-	entities[id] = e
-	return e
-}
-
-// 新增：用来保存 NPC 移动状态的结构
 type NPCState struct {
-	vx, vz     float32   // 当前 X, Z 轴的速度
-	changeTime time.Time // 下次改变方向的时间
+	vx, vz     aoi.Float
+	changeTime time.Time
 }
 
-// 全局增加一个状态表
-var npcStates = make(map[uint32]*NPCState)
+var npcStates = make(map[aoi.EntityID]*NPCState)
 
-// 模拟循环：让 NPC 移动
+func getRandPos() *aoi.Position {
+	return &aoi.Position{X: aoi.Float(rand.Intn(MapSize)), Y: 0, Z: aoi.Float(rand.Intn(MapSize))}
+}
 func simulationLoop() {
-	ticker := time.NewTicker(50 * time.Millisecond) // 20 FPS
-	// 定义移动速度 (每帧移动多少像素)
+	ticker := time.NewTicker(50 * time.Millisecond)
 	const speed = 3.0
 	for range ticker.C {
 		mu.Lock()
-		for id, e := range entities {
-			// 只有 NPC (ID < 100) 会自动移动
+		for id, e := range mgr.entities {
 			if id < 100 {
-				// 1. 获取或初始化该 NPC 的状态
 				state, ok := npcStates[id]
 				if !ok || time.Now().After(state.changeTime) {
-					// 需要初始化，或者到了改变方向的时间
-					// 随机生成一个方向向量
+
 					angle := rand.Float64() * 2 * math.Pi
 					state = &NPCState{
-						vx: float32(math.Cos(angle)) * speed,
-						vz: float32(math.Sin(angle)) * speed,
+						vx: aoi.Float(math.Cos(angle)) * speed,
+						vz: aoi.Float(math.Sin(angle)) * speed,
 						// 随机走 1 到 4 秒后再换方向
 						changeTime: time.Now().Add(time.Duration(rand.Intn(3000)+1000) * time.Millisecond),
 					}
 					npcStates[id] = state
 				}
 
-				// 2. 计算新位置
 				pos := e.GetPos()
 				newX := pos.X + state.vx
 				newZ := pos.Z + state.vz
 
-				// 3. 边界反弹处理 (碰到墙壁反向反弹)
 				if newX <= 0 || newX >= MapSize {
 					state.vx = -state.vx    // X轴速度反转
 					newX = pos.X + state.vx // 重新计算位置
@@ -155,8 +120,7 @@ func simulationLoop() {
 					newZ = pos.Z + state.vz
 				}
 
-				// 4. 更新 Grid 管理器
-				mgr.MoveEntity(id, &Position{X: newX, Z: newZ})
+				mgr.MoveEntity(id, &aoi.Position{X: newX, Z: newZ})
 			}
 		}
 		mu.Unlock()
@@ -174,16 +138,16 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		for {
 			var msg struct {
-				X float32 `json:"x"`
-				Z float32 `json:"z"`
+				X aoi.Float `json:"x"`
+				Z aoi.Float `json:"z"`
 			}
 			if err := ws.ReadJSON(&msg); err != nil {
 				break
 			}
 			mu.Lock()
 			// 移动主角 ID 100
-			if _, ok := entities[100]; ok {
-				mgr.MoveEntity(100, &Position{X: msg.X, Z: msg.Z})
+			if _, ok := mgr.entities[100]; ok {
+				mgr.MoveEntity(100, &aoi.Position{X: msg.X, Z: msg.Z})
 			}
 			mu.Unlock()
 		}
@@ -206,10 +170,10 @@ func buildSnapshot() Snapshot {
 	defer mu.Unlock()
 
 	var snap Snapshot
-	snap.Entities = make([]EntityDTO, 0, len(entities))
+	snap.Entities = make([]EntityDTO, 0, len(mgr.entities))
 	snap.Lines = make([]LineDTO, 0)
 
-	for id, e := range entities {
+	for id, e := range mgr.entities {
 		pos := e.GetPos()
 		eType := "npc"
 		color := "#ff4d4f" // 红
@@ -231,12 +195,12 @@ func buildSnapshot() Snapshot {
 		})
 
 		// 获取 AOI 列表生成连线
-		// 为了不让画面太乱，我们只画 主角(100) 和 眼(200) 看到的物体
+		// 为了不让画面太乱，只画 主角(100) 和 眼(200) 看到的物体
 		if id == 100 || id == 200 {
 			rawAoiSet := mgr.findSurroundEntities(e)
-			aoiSet := mgr.GetAOI(id)
-			aoiSet.ForEach(func(targetID uint32) bool {
-				target := entities[targetID]
+			aoiSet := mgr.GetView(aoi.PlayerID(id))
+			aoiSet.ForEach(func(targetID aoi.EntityID) bool {
+				target := mgr.entities[targetID]
 				if target != nil {
 					lineColor := "rgba(24, 144, 255, 0.3)" // 默认蓝色连线
 					if id == 200 {
@@ -244,7 +208,7 @@ func buildSnapshot() Snapshot {
 					}
 
 					// 如果是主角(100)看到了目标，但这个目标实际上是在眼(200)的周围
-					// 这证明了 Subscribe 功能生效
+					// 这证明了 subscribe 功能生效
 					if id == 100 {
 						if !rawAoiSet.Contains(target) {
 							lineColor = "rgba(255, 255, 0, 0.5)" // 黄色表示共享视野

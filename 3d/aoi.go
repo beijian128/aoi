@@ -1,12 +1,8 @@
 package three_dim
 
 import (
-	"math"
+	"github.com/beijian128/aoi"
 )
-
-// ==========================================
-// 1. 基础数据结构定义
-// ==========================================
 
 // MarkerType 节点类型
 type MarkerType int
@@ -21,7 +17,7 @@ const (
 type Marker struct {
 	Type  MarkerType
 	Axis  int // 0:X, 1:Y, 2:Z
-	Val   float64
+	Val   aoi.Float
 	Owner *Entity
 
 	prev *Marker
@@ -34,21 +30,12 @@ type AxisList struct {
 	Tail *Marker // +Inf
 }
 
-// Player 玩家/阵营 (逻辑层)
-// 它是视野的订阅者，本身没有坐标，汇总其下属 Entity 的视野
-type Player struct {
-	ID int64
-	// FinalView: 聚合后的视野
-	// Key: TargetID, Value: 引用计数 (有多少个我的单位看见了这个目标)
-	FinalView map[int64]int
-}
-
 // Entity 物理实体 (物理层)
 // 它是视野的提供者，也是被观察的对象
 type Entity struct {
-	ID    int64
-	Pos   [3]float64
-	Range float64 // 视野半径 (立方体半边长)
+	ID    aoi.EntityID
+	Pos   [3]aoi.Float
+	Range aoi.Float // 视野半径 (立方体半边长)
 
 	// 链表节点: [3个轴][3种类型]
 	Markers [3][3]*Marker
@@ -56,82 +43,79 @@ type Entity struct {
 	// ViewCounts: 物理视野计数器
 	// Key: TargetID
 	// Value: 轴匹配数 (0-3). 当且仅当 == 3 时，物理上可见
-	ViewCounts map[int64]int
+	ViewCounts map[aoi.EntityID]int
 
 	// VisibleSet: 当前物理上真正看见的集合 (ViewCounts==3 的子集)
-	VisibleSet map[int64]bool
+	VisibleSet map[aoi.EntityID]bool
 
 	// Subscribers: 哪些玩家订阅了我的视野
 	// Key: PlayerID
-	Subscribers map[int64]*Player
-}
-
-// Callback 回调接口
-type AOICallback interface {
-	// 玩家视野变化回调 (去重后的结果)
-	OnPlayerEnter(playerID, targetID int64)
-	OnPlayerLeave(playerID, targetID int64)
+	Subscribers map[aoi.PlayerID]*aoi.Player
 }
 
 // Manager AOI 管理器
 type Manager struct {
-	Axes     [3]*AxisList
-	Entities map[int64]*Entity
-	Players  map[int64]*Player
-	Callback AOICallback
+	axes          [3]*AxisList
+	entities      map[aoi.EntityID]*Entity
+	players       map[aoi.PlayerID]*aoi.Player
+	eventCallback aoi.AOICallback
 }
 
-// ==========================================
-// 2. Manager 核心逻辑
-// ==========================================
+func (m *Manager) CanSee(watcherId aoi.PlayerID, targetId aoi.EntityID) bool {
+	watcher := m.players[watcherId]
+	if watcher == nil {
+		return false
+	}
+	return watcher.FinalView[targetId] > 0
+}
 
 func NewManager() *Manager {
 	m := &Manager{
-		Entities: make(map[int64]*Entity),
-		Players:  make(map[int64]*Player),
+		entities: make(map[aoi.EntityID]*Entity),
+		players:  make(map[aoi.PlayerID]*aoi.Player),
 	}
 	// 初始化三轴链表哨兵
 	for i := 0; i < 3; i++ {
-		head := &Marker{Val: math.Inf(-1)}
-		tail := &Marker{Val: math.Inf(1)}
+		head := &Marker{Val: aoi.FloatInf(-1)}
+		tail := &Marker{Val: aoi.FloatInf(1)}
 		head.next = tail
 		tail.prev = head
-		m.Axes[i] = &AxisList{Head: head, Tail: tail}
+		m.axes[i] = &AxisList{Head: head, Tail: tail}
 	}
 	return m
 }
 
-func (m *Manager) SetCallback(cb AOICallback) {
-	m.Callback = cb
+func (m *Manager) SetCallback(cb aoi.AOICallback) {
+	m.eventCallback = cb
 }
 
 // AddPlayer 注册玩家
-func (m *Manager) AddPlayer(id int64) {
-	if _, ok := m.Players[id]; !ok {
-		m.Players[id] = &Player{
+func (m *Manager) AddPlayer(id aoi.PlayerID) {
+	if _, ok := m.players[id]; !ok {
+		m.players[id] = &aoi.Player{
 			ID:        id,
-			FinalView: make(map[int64]int),
+			FinalView: make(map[aoi.EntityID]int),
 		}
 	}
 }
 
 // AddEntity 添加物理单位
-func (m *Manager) AddEntity(id int64, x, y, z, rangeVal float64) {
-	if _, ok := m.Entities[id]; ok {
+func (m *Manager) AddEntity(id aoi.EntityID, pos *aoi.Position, rangeVal aoi.Float) {
+	if _, ok := m.entities[id]; ok {
 		return
 	}
-
+	x, y, z := pos.X, pos.Y, pos.Z
 	e := &Entity{
 		ID:          id,
-		Pos:         [3]float64{x, y, z},
+		Pos:         [3]aoi.Float{x, y, z},
 		Range:       rangeVal,
-		ViewCounts:  make(map[int64]int),
-		VisibleSet:  make(map[int64]bool),
-		Subscribers: make(map[int64]*Player),
+		ViewCounts:  make(map[aoi.EntityID]int),
+		VisibleSet:  make(map[aoi.EntityID]bool),
+		Subscribers: make(map[aoi.PlayerID]*aoi.Player),
 	}
 
 	// 创建并链接节点
-	vals := [3]float64{x, y, z}
+	vals := [3]aoi.Float{x, y, z}
 	for axis := 0; axis < 3; axis++ {
 		// 创建
 		e.Markers[axis][MarkerMin] = &Marker{Type: MarkerMin, Axis: axis, Val: vals[axis] - rangeVal, Owner: e}
@@ -139,7 +123,7 @@ func (m *Manager) AddEntity(id int64, x, y, z, rangeVal float64) {
 		e.Markers[axis][MarkerPos] = &Marker{Type: MarkerPos, Axis: axis, Val: vals[axis], Owner: e}
 
 		// 简单插入到尾部前 (依靠后面的 Update 进行排序)
-		list := m.Axes[axis]
+		list := m.axes[axis]
 		prev := list.Tail.prev
 
 		// 链接 Min
@@ -156,15 +140,15 @@ func (m *Manager) AddEntity(id int64, x, y, z, rangeVal float64) {
 		list.Tail.prev = e.Markers[axis][MarkerMax]
 	}
 
-	m.Entities[id] = e
+	m.entities[id] = e
 
 	// 立即更新位置以触发正确的排序和AOI计算
 	m.updateEntity(e, x, y, z)
 }
 
 // RemoveEntity 移除物理单位
-func (m *Manager) RemoveEntity(id int64) {
-	e, ok := m.Entities[id]
+func (m *Manager) RemoveEntity(id aoi.EntityID) {
+	e, ok := m.entities[id]
 	if !ok {
 		return
 	}
@@ -184,20 +168,19 @@ func (m *Manager) RemoveEntity(id int64) {
 			node.next.prev = node.prev
 		}
 	}
-	delete(m.Entities, id)
+	delete(m.entities, id)
 }
 
-// Move 移动
-func (m *Manager) Move(id int64, x, y, z float64) {
-	if e, ok := m.Entities[id]; ok {
-		m.updateEntity(e, x, y, z)
+func (m *Manager) MoveEntity(id aoi.EntityID, pos *aoi.Position) {
+	if e, ok := m.entities[id]; ok {
+		m.updateEntity(e, pos.X, pos.Y, pos.Z)
 	}
 }
 
-// Subscribe 视野订阅 (插眼)
-func (m *Manager) Subscribe(playerID, entityID int64) {
-	p, pok := m.Players[playerID]
-	e, eok := m.Entities[entityID]
+// Subscribe 视野订阅
+func (m *Manager) Subscribe(playerID aoi.PlayerID, entityID aoi.EntityID) {
+	p, pok := m.players[playerID]
+	e, eok := m.entities[entityID]
 	if !pok || !eok {
 		return
 	}
@@ -206,7 +189,6 @@ func (m *Manager) Subscribe(playerID, entityID int64) {
 		return
 	}
 
-	// 建立关系
 	e.Subscribers[playerID] = p
 
 	// 立即同步当前视野
@@ -215,10 +197,10 @@ func (m *Manager) Subscribe(playerID, entityID int64) {
 	}
 }
 
-// Unsubscribe 取消订阅 (眼消失)
-func (m *Manager) Unsubscribe(playerID, entityID int64) {
-	p, pok := m.Players[playerID]
-	e, eok := m.Entities[entityID]
+// Unsubscribe 取消订阅
+func (m *Manager) Unsubscribe(playerID aoi.PlayerID, entityID aoi.EntityID) {
+	p, pok := m.players[playerID]
+	e, eok := m.entities[entityID]
 	if !pok || !eok {
 		return
 	}
@@ -236,48 +218,41 @@ func (m *Manager) Unsubscribe(playerID, entityID int64) {
 	}
 }
 
-// GetPlayerView 获取玩家当前能看到的所有目标
-func (m *Manager) GetPlayerView(playerID int64) []int64 {
-	p, ok := m.Players[playerID]
+func (m *Manager) GetView(id aoi.PlayerID) aoi.Set[aoi.EntityID] {
+	p, ok := m.players[id]
 	if !ok {
 		return nil
 	}
 
-	res := make([]int64, 0, len(p.FinalView))
+	res := aoi.NewSet[aoi.EntityID]()
 	for tid := range p.FinalView {
-		res = append(res, tid)
+		res.Add(tid)
 	}
 	return res
 }
 
-// ==========================================
-// 3. 核心算法实现
-// ==========================================
-
-func (m *Manager) updateEntity(e *Entity, x, y, z float64) {
-	e.Pos = [3]float64{x, y, z}
-	newVals := [3]float64{x, y, z}
+func (m *Manager) updateEntity(e *Entity, x, y, z aoi.Float) {
+	e.Pos = [3]aoi.Float{x, y, z}
+	newVals := [3]aoi.Float{x, y, z}
 
 	for axis := 0; axis < 3; axis++ {
-		// 依次更新 Min, Max, Pos
-		// 注意：更新顺序不影响最终正确性，因为 Swap 会处理一切
 		m.updateMarker(e.Markers[axis][MarkerMin], newVals[axis]-e.Range)
 		m.updateMarker(e.Markers[axis][MarkerMax], newVals[axis]+e.Range)
 		m.updateMarker(e.Markers[axis][MarkerPos], newVals[axis])
 	}
 }
 
-func (m *Manager) updateMarker(node *Marker, newVal float64) {
+func (m *Manager) updateMarker(node *Marker, newVal aoi.Float) {
 	node.Val = newVal
 
 	// 向右移动 (Val 变大)
-	for node.next != nil && !math.IsInf(node.next.Val, 0) && node.Val > node.next.Val {
+	for node.next != nil && !node.next.Val.IsInf(0) && node.Val > node.next.Val {
 		other := node.next
 		m.swap(node, other) // node 换到 other 后面
 		m.checkCross(node, other, true)
 	}
 	// 向左移动 (Val 变小)
-	for node.prev != nil && !math.IsInf(node.prev.Val, 0) && node.Val < node.prev.Val {
+	for node.prev != nil && !node.prev.Val.IsInf(0) && node.Val < node.prev.Val {
 		other := node.prev
 		m.swap(other, node) // other 换到 node 后面 (即 node 换到 other 前面)
 		m.checkCross(node, other, false)
@@ -333,11 +308,6 @@ func (m *Manager) checkCross(mover, passive *Marker, movingRight bool) {
 
 	isEnter := false
 
-	// 简化判断逻辑：
-	// 我们只要判断 swap 发生**后**，Pos 是否在 [Min, Max] 区间内？
-	// 但由于我们是增量更新，我们必须知道这是"变好"还是"变坏"。
-	// 采用上述矩阵：
-
 	if watcherNode.Type == MarkerMin {
 		// Watcher Min vs Target Pos
 		if mover == watcherNode { // Min 动
@@ -371,7 +341,7 @@ func (m *Manager) checkCross(mover, passive *Marker, movingRight bool) {
 		watcher.ViewCounts[target.ID] = newC
 	}
 
-	// 状态机翻转 (3轴全中)
+	// (3轴全部进入)
 	if oldC < 3 && newC == 3 {
 		// 物理 Enter
 		watcher.VisibleSet[target.ID] = true
@@ -384,7 +354,7 @@ func (m *Manager) checkCross(mover, passive *Marker, movingRight bool) {
 }
 
 // notifySubscribers 通知所有订阅者
-func (m *Manager) notifySubscribers(source *Entity, targetID int64, isEnter bool) {
+func (m *Manager) notifySubscribers(source *Entity, targetID aoi.EntityID, isEnter bool) {
 	delta := -1
 	if isEnter {
 		delta = 1
@@ -396,7 +366,7 @@ func (m *Manager) notifySubscribers(source *Entity, targetID int64, isEnter bool
 }
 
 // refCountChange 玩家引用计数变更
-func (m *Manager) refCountChange(p *Player, targetID int64, delta int) {
+func (m *Manager) refCountChange(p *aoi.Player, targetID aoi.EntityID, delta int) {
 	oldVal := p.FinalView[targetID]
 	newVal := oldVal + delta
 
@@ -407,11 +377,11 @@ func (m *Manager) refCountChange(p *Player, targetID int64, delta int) {
 	}
 
 	// 触发回调 (0 -> 1 Enter, 1 -> 0 Leave)
-	if m.Callback != nil {
+	if m.eventCallback != nil {
 		if oldVal == 0 && newVal > 0 {
-			m.Callback.OnPlayerEnter(p.ID, targetID)
+			m.eventCallback.OnEnter(p.ID, targetID)
 		} else if oldVal > 0 && newVal <= 0 {
-			m.Callback.OnPlayerLeave(p.ID, targetID)
+			m.eventCallback.OnLeave(p.ID, targetID)
 		}
 	}
 }

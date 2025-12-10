@@ -1,130 +1,62 @@
 package two_dim
 
 import (
-	"github.com/beijian128/aoi/common"
+	"github.com/beijian128/aoi"
 )
 
-type Position struct {
-	X, Z float32 // xz轴 平行于地面
-}
-
 type Entity struct {
-	id  uint32
-	pos *Position
+	id  aoi.EntityID
+	pos *aoi.Position
 
-	beSubscribed common.Set[uint32]
-	interests    map[uint32]int
+	subscribers map[aoi.PlayerID]*aoi.Player
 }
 
-func NewEntity(id uint32, pos *Position) *Entity {
+func NewEntity(id aoi.EntityID, pos *aoi.Position) *Entity {
 	return &Entity{
-		id:           id,
-		pos:          pos,
-		beSubscribed: common.NewSet[uint32](),
-		interests:    map[uint32]int{},
+		id:          id,
+		pos:         pos,
+		subscribers: map[aoi.PlayerID]*aoi.Player{},
 	}
 }
 
-func (e *Entity) GetID() uint32 {
+func (e *Entity) GetID() aoi.EntityID {
 	return e.id
 }
 
-func (e *Entity) GetPos() *Position {
+func (e *Entity) GetPos() *aoi.Position {
 	return e.pos
 }
 
-func (e *Entity) SetPos(pos *Position) {
+func (e *Entity) SetPos(pos *aoi.Position) {
 	e.pos = pos
 }
 
 // Grid 1个格子
 type Grid struct {
-	entities map[uint32]*Entity // 格子中的所有实体
+	entities map[aoi.EntityID]*Entity // 格子中的所有实体
 }
 type Manager struct {
 	grids                  [][]*Grid
 	minX, minZ, maxX, maxZ int
 	gridSize               int
 	rowNum, columnNum      int
-	entities               map[uint32]*Entity
+	entities               map[aoi.EntityID]*Entity
+	players                map[aoi.PlayerID]*aoi.Player
 
-	onEnterAOI func(self, other uint32)
-	onLeaveAOI func(self, other uint32)
+	cbk aoi.AOICallback
 }
 
-func NewManager(gridSize, minX, minZ, maxX, maxZ int) *Manager {
-	m := &Manager{
-		minX:      minX,
-		minZ:      minZ,
-		maxX:      maxX,
-		maxZ:      maxZ,
-		gridSize:  gridSize,
-		entities:  make(map[uint32]*Entity),
-		rowNum:    (maxX-minX)/gridSize + 1,
-		columnNum: (maxZ-minZ)/gridSize + 1,
+func (m *Manager) AddPlayer(id aoi.PlayerID) {
+	m.players[id] = &aoi.Player{
+		ID:        id,
+		FinalView: make(map[aoi.EntityID]int),
 	}
-	m.grids = make([][]*Grid, m.rowNum)
-	for i := range m.grids {
-		m.grids[i] = make([]*Grid, m.columnNum)
-		for j := range m.grids[i] {
-			m.grids[i][j] = &Grid{
-				entities: make(map[uint32]*Entity),
-			}
-		}
-	}
-	return m
 }
-
-func (m *Manager) RegisterEnterAOIHandler(onEnterAOI func(self, other uint32)) {
-	m.onEnterAOI = onEnterAOI
-}
-
-func (m *Manager) RegisterLeaveAOIHandler(onLeaveAOI func(self, other uint32)) {
-	m.onLeaveAOI = onLeaveAOI
-}
-
-func (m *Manager) getGridIndexByPos(pos *Position) (int, int) {
-	row := (int(pos.X) - m.minX) / m.gridSize
-	col := (int(pos.Z) - m.minZ) / m.gridSize
-	if row < 0 {
-		row = 0
-	}
-	if col < 0 {
-		col = 0
-	}
-	if row >= m.rowNum {
-		row = m.rowNum - 1
-	}
-	if col >= m.columnNum {
-		col = m.columnNum - 1
-	}
-	return row, col
-}
-
-func (m *Manager) findSurroundEntities(e *Entity) common.Set[*Entity] {
-	pos := e.GetPos()
-	row, col := m.getGridIndexByPos(pos)
-	set := common.NewSet[*Entity]()
-	for i := row - 1; i <= row+1; i++ {
-		for j := col - 1; j <= col+1; j++ {
-			if i < 0 || i >= m.rowNum || j < 0 || j >= m.columnNum {
-				continue
-			}
-			for _, v := range m.grids[i][j].entities {
-				if v.GetID() == e.GetID() {
-					continue
-				}
-				set.Add(v)
-			}
-		}
-	}
-	return set
-}
-
-func (m *Manager) AddEntity(entity *Entity) {
-	if entity == nil {
+func (m *Manager) AddEntity(id aoi.EntityID, pos *aoi.Position, rangeVal aoi.Float) {
+	if pos == nil {
 		return
 	}
+	entity := NewEntity(id, pos)
 	row, col := m.getGridIndexByPos(entity.GetPos())
 	grid := m.grids[row][col] // 一定能找到，这里就不判空了
 	grid.entities[entity.GetID()] = entity
@@ -135,7 +67,7 @@ func (m *Manager) AddEntity(entity *Entity) {
 	})
 }
 
-func (m *Manager) RemoveEntity(id uint32) {
+func (m *Manager) RemoveEntity(id aoi.EntityID) {
 	entity := m.entities[id]
 	if entity == nil {
 		return
@@ -150,7 +82,10 @@ func (m *Manager) RemoveEntity(id uint32) {
 	})
 }
 
-func (m *Manager) MoveEntity(id uint32, pos *Position) {
+func (m *Manager) MoveEntity(id aoi.EntityID, pos *aoi.Position) {
+	if pos == nil {
+		return
+	}
 	entity := m.entities[id]
 	if entity == nil {
 		return
@@ -184,22 +119,13 @@ func (m *Manager) MoveEntity(id uint32, pos *Position) {
 	})
 }
 
-// CanSee self是否能看到other
-func (m *Manager) CanSee(selfId, otherId uint32) bool {
-	self := m.entities[selfId]
-	if self == nil {
-		return false
-	}
-	return self.interests[otherId] > 0
-}
-
-func (m *Manager) GetAOI(id uint32) common.Set[uint32] {
-	set := common.NewSet[uint32]()
-	e := m.entities[id]
-	if e == nil {
+func (m *Manager) GetView(id aoi.PlayerID) aoi.Set[aoi.EntityID] {
+	set := aoi.NewSet[aoi.EntityID]()
+	player := m.players[id]
+	if player == nil {
 		return set
 	}
-	for eid, cnt := range e.interests {
+	for eid, cnt := range player.FinalView {
 		if cnt > 0 {
 			set.Add(eid)
 		}
@@ -207,101 +133,143 @@ func (m *Manager) GetAOI(id uint32) common.Set[uint32] {
 	return set
 }
 
-func (m *Manager) addInterest(e1, e2 *Entity) {
-	e1.interests[e2.GetID()]++
-	if e1.interests[e2.GetID()] == 1 {
-		if m.onEnterAOI != nil {
-			m.onEnterAOI(e1.GetID(), e2.GetID())
+func (m *Manager) Subscribe(subscriberId aoi.PlayerID, targetId aoi.EntityID) {
+
+	subscriber := m.players[subscriberId]
+	target := m.entities[targetId]
+	if subscriber == nil || target == nil {
+		return
+	}
+	if _, ok := target.subscribers[subscriberId]; ok { // 已经订阅过
+		return
+	}
+	target.subscribers[subscriberId] = subscriber
+	m.findSurroundEntities(target).ForEach(func(other *Entity) bool {
+		m.incrFinalView(subscriber, other)
+		return false
+	})
+}
+
+func (m *Manager) Unsubscribe(subscriberId aoi.PlayerID, targetId aoi.EntityID) {
+	subscriber := m.players[subscriberId]
+	target := m.entities[targetId]
+	if subscriber == nil || target == nil {
+		return
+	}
+	if _, ok := target.subscribers[subscriberId]; !ok { // 本来就没订阅
+		return
+	}
+	delete(target.subscribers, subscriberId)
+	m.findSurroundEntities(target).ForEach(func(other *Entity) bool {
+		m.decrFinalView(subscriber, other)
+		return false
+	})
+}
+
+func (m *Manager) SetCallback(cb aoi.AOICallback) {
+	m.cbk = cb
+}
+
+func NewManager(gridSize, minX, minZ, maxX, maxZ int) *Manager {
+	m := &Manager{
+		minX:      minX,
+		minZ:      minZ,
+		maxX:      maxX,
+		maxZ:      maxZ,
+		gridSize:  gridSize,
+		entities:  make(map[aoi.EntityID]*Entity),
+		players:   make(map[aoi.PlayerID]*aoi.Player),
+		rowNum:    (maxX-minX)/gridSize + 1,
+		columnNum: (maxZ-minZ)/gridSize + 1,
+	}
+	m.grids = make([][]*Grid, m.rowNum)
+	for i := range m.grids {
+		m.grids[i] = make([]*Grid, m.columnNum)
+		for j := range m.grids[i] {
+			m.grids[i][j] = &Grid{
+				entities: make(map[aoi.EntityID]*Entity),
+			}
+		}
+	}
+	return m
+}
+
+func (m *Manager) getGridIndexByPos(pos *aoi.Position) (int, int) {
+	row := (int(pos.X) - m.minX) / m.gridSize
+	col := (int(pos.Z) - m.minZ) / m.gridSize
+	if row < 0 {
+		row = 0
+	}
+	if col < 0 {
+		col = 0
+	}
+	if row >= m.rowNum {
+		row = m.rowNum - 1
+	}
+	if col >= m.columnNum {
+		col = m.columnNum - 1
+	}
+	return row, col
+}
+
+func (m *Manager) findSurroundEntities(e *Entity) aoi.Set[*Entity] {
+	pos := e.GetPos()
+	row, col := m.getGridIndexByPos(pos)
+	set := aoi.NewSet[*Entity]()
+	for i := row - 1; i <= row+1; i++ {
+		for j := col - 1; j <= col+1; j++ {
+			if i < 0 || i >= m.rowNum || j < 0 || j >= m.columnNum {
+				continue
+			}
+			for _, v := range m.grids[i][j].entities {
+				set.Add(v)
+			}
+		}
+	}
+	return set
+}
+
+func (m *Manager) CanSee(watcherId aoi.PlayerID, targetId aoi.EntityID) bool {
+	watcher := m.players[watcherId]
+	if watcher == nil {
+		return false
+	}
+	return watcher.FinalView[targetId] > 0
+}
+
+func (m *Manager) incrFinalView(player *aoi.Player, e *Entity) {
+	player.FinalView[e.GetID()]++
+	if player.FinalView[e.GetID()] == 1 {
+		if m.cbk != nil {
+			m.cbk.OnEnter(player.ID, e.GetID())
 		}
 	}
 }
 
-func (m *Manager) removeInterest(e1, e2 *Entity) {
-	e1.interests[e2.GetID()]--
-	if e1.interests[e2.GetID()] == 0 {
-		if m.onLeaveAOI != nil {
-			m.onLeaveAOI(e1.GetID(), e2.GetID())
+func (m *Manager) decrFinalView(player *aoi.Player, e *Entity) {
+	player.FinalView[e.GetID()]--
+	if player.FinalView[e.GetID()] <= 0 {
+		if m.cbk != nil {
+			m.cbk.OnLeave(player.ID, e.GetID())
 		}
+		delete(player.FinalView, e.GetID())
 	}
 }
 
 func (m *Manager) onEnter(e1, e2 *Entity) {
-	m.addInterest(e1, e2)
-	m.addInterest(e2, e1)
-	e1.beSubscribed.ForEach(func(id uint32) bool {
-		e := m.entities[id]
-		if e != nil {
-			m.addInterest(e, e2)
-		}
-		return false
-	})
-	e2.beSubscribed.ForEach(func(id uint32) bool {
-		e := m.entities[id]
-		if e != nil {
-			m.addInterest(e, e1)
-		}
-		return false
-	})
+	for _, subscriber := range e1.subscribers {
+		m.incrFinalView(subscriber, e2)
+	}
+	for _, subscriber := range e2.subscribers {
+		m.incrFinalView(subscriber, e1)
+	}
 }
 
 func (m *Manager) onLeave(e1, e2 *Entity) {
-	m.removeInterest(e1, e2)
-	m.removeInterest(e2, e1)
-
-	e1.beSubscribed.ForEach(func(id uint32) bool {
-		e := m.entities[id]
-		if e != nil {
-			m.removeInterest(e, e2)
-		}
-		return false
-	})
-	e2.beSubscribed.ForEach(func(id uint32) bool {
-		e := m.entities[id]
-		if e != nil {
-			m.removeInterest(e, e1)
-		}
-		return false
-	})
-}
-
-// Subscribe e1 订阅 e2 . 进入e2视野的实体将同时进入e1的视野
-// 一个可能的应用场景：MOBA游戏，玩家控制的角色插眼 ，玩家的视野变为角色的视野加上眼的视野，让角色实体订阅“眼”实体即可
-// 订阅不具有传递性，仅将被订阅目标的原始视野合并到订阅者上
-func (m *Manager) Subscribe(eid1, eid2 uint32) {
-	if eid1 == eid2 {
-		return
+	for _, subscriber := range e1.subscribers {
+		m.decrFinalView(subscriber, e2)
 	}
-	e1 := m.entities[eid1]
-	e2 := m.entities[eid2]
-	if e1 == nil || e2 == nil {
-		return
+	for _, subscriber := range e2.subscribers {
+		m.decrFinalView(subscriber, e1)
 	}
-	if e2.beSubscribed.Contains(e1.GetID()) {
-		return
-	}
-	e2.beSubscribed.Add(e1.GetID())
-	m.findSurroundEntities(e2).ForEach(func(other *Entity) bool { // 原始视野
-		m.addInterest(e1, other)
-		return false
-	})
-
-}
-
-func (m *Manager) Unsubscribe(eid1, eid2 uint32) {
-	if eid1 == eid2 {
-		return
-	}
-	e1 := m.entities[eid1]
-	e2 := m.entities[eid2]
-	if e1 == nil || e2 == nil {
-		return
-	}
-	if !e2.beSubscribed.Contains(e1.GetID()) {
-		return
-	}
-	e2.beSubscribed.Remove(e1.GetID())
-	m.findSurroundEntities(e2).ForEach(func(other *Entity) bool {
-		m.removeInterest(e1, other)
-		return false
-	})
 }
