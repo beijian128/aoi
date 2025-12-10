@@ -1,4 +1,4 @@
-package _d
+package three_dim
 
 import (
 	"math"

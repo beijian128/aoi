@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>3D AOI 可视化 (Three.js)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; }
+        #info {
+            position: absolute;
+            top: 10px; left: 10px;
+            color: #fff;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            pointer-events: none;
+        }
+        kbd {
+            background: #444;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+    </style>
+    <!-- 引入 Three.js 和 OrbitControls -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+<div id="info">
+    <h3>3D AOI 测试</h3>
+    <p>控制主角 (蓝色中心点):</p>
+    <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 平面移动 (X/Z)</p>
+    <p><kbd>R</kbd> 上升 / <kbd>F</kbd> 下降 (Y轴)</p>
+    <p>鼠标拖拽旋转视角</p>
+    <p id="stats">连接中...</p>
+</div>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // 1. Three.js 场景初始化
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x111111);
+    // 添加一点雾效果增加空间感
+    scene.fog = new THREE.Fog(0x111111, 200, 1000);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+    camera.position.set(600, 400, 600); // 放在侧上方
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // 辅助工具
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(250, 250, 250); // 看向地图中心
+    controls.update();
+
+    const axesHelper = new THREE.AxesHelper(50);
+    scene.add(axesHelper);
+
+    // 绘制地图边界 (500x500x500)
+    const mapSize = 500;
+    const boxGeo = new THREE.BoxGeometry(mapSize, mapSize, mapSize);
+    const boxEdge = new THREE.EdgesGeometry(boxGeo);
+    const boxLine = new THREE.LineSegments(boxEdge, new THREE.LineBasicMaterial({ color: 0x333333 }));
+    boxLine.position.set(mapSize/2, mapSize/2, mapSize/2);
+    scene.add(boxLine);
+
+    // 灯光
+    const ambientLight = new THREE.AmbientLight(0x404040);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    dirLight.position.set(100, 500, 100);
+    scene.add(dirLight);
+
+    // ------------------------------------------------
+    // 游戏对象管理
+    // ------------------------------------------------
+
+    // 材质复用
+    const matInvisible = new THREE.MeshLambertMaterial({ color: 0xff0000 }); // 红色: 不可见
+    const matVisible = new THREE.MeshLambertMaterial({ color: 0x00ff00, emissive: 0x004400 }); // 绿色: 可见
+
+    const npcObjects = new Map(); // ID -> THREE.Mesh
+    const visibleSet = new Set();
+
+    // 主角相关
+    let myID = 0;
+    let myRange = 0;
+    let myPos = new THREE.Vector3(250, 250, 250); // 初始位置
+    const mySpeed = 5;
+
+    // 主角显示对象
+    const playerMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(5, 16, 16),
+        new THREE.MeshBasicMaterial({ color: 0x00aaff })
+    );
+    scene.add(playerMesh);
+
+    // 视野包围盒显示 (AOI Box)
+    let aoiHelper = null;
+
+    // ------------------------------------------------
+    // 网络通信
+    // ------------------------------------------------
+    const ws = new WebSocket("ws://localhost:8080/ws");
+    const statsDiv = document.getElementById('stats');
+
+    ws.onopen = () => { statsDiv.innerText = "已连接"; };
+    ws.onclose = () => { statsDiv.innerText = "连接断开"; };
+
+    ws.onmessage = (evt) => {
+        const msg = JSON.parse(evt.data);
+
+        if (msg.type === 'init') {
+            myID = msg.my_id;
+            myRange = msg.range;
+
+            // 初始化 AOI Box Helper
+            // AOI 算法中 Range 是半边长，所以 Box 大小是 Range*2
+            const geo = new THREE.BoxGeometry(myRange*2, myRange*2, myRange*2);
+            const edges = new THREE.EdgesGeometry(geo);
+            aoiHelper = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x00aaff }));
+            scene.add(aoiHelper);
+
+            // 创建初始 NPC
+            msg.npcs.forEach(updateNPC);
+
+        } else if (msg.type === 'pos_update') {
+            msg.data.forEach(updateNPC);
+
+        } else if (msg.type === 'view_update') {
+            visibleSet.clear();
+            if (msg.visible) {
+                msg.visible.forEach(id => visibleSet.add(id));
+            }
+            updateColors();
+        }
+    };
+
+    function updateNPC(data) {
+        let mesh = npcObjects.get(data.id);
+        if (!mesh) {
+            // 创建新 NPC (立方体)
+            const geometry = new THREE.BoxGeometry(8, 8, 8);
+            mesh = new THREE.Mesh(geometry, matInvisible);
+            scene.add(mesh);
+            npcObjects.set(data.id, mesh);
+        }
+        // 更新位置 (Three.js Y轴向上，这里我们保持一致：X->X, Y->Y, Z->Z)
+        mesh.position.set(data.x, data.y, data.z);
+    }
+
+    function updateColors() {
+        npcObjects.forEach((mesh, id) => {
+            if (visibleSet.has(id)) {
+                mesh.material = matVisible;
+                mesh.scale.set(1.5, 1.5, 1.5); // 可见时变大一点
+            } else {
+                mesh.material = matInvisible;
+                mesh.scale.set(1, 1, 1);
+            }
+        });
+        statsDiv.innerText = `可见数量: ${visibleSet.size}`;
+    }
+
+    // ------------------------------------------------
+    // 控制逻辑
+    // ------------------------------------------------
+    const keys = { w:false, a:false, s:false, d:false, r:false, f:false };
+
+    window.addEventListener('keydown', (e) => {
+        const k = e.key.toLowerCase();
+        if (keys.hasOwnProperty(k)) keys[k] = true;
+    });
+    window.addEventListener('keyup', (e) => {
+        const k = e.key.toLowerCase();
+        if (keys.hasOwnProperty(k)) keys[k] = false;
+    });
+
+    // ------------------------------------------------
+    // 渲染循环
+    // ------------------------------------------------
+    function animate() {
+        requestAnimationFrame(animate);
+
+        // 1. 处理主角移动
+        let moved = false;
+        if (keys.w) { myPos.z -= mySpeed; moved = true; }
+        if (keys.s) { myPos.z += mySpeed; moved = true; }
+        if (keys.a) { myPos.x -= mySpeed; moved = true; }
+        if (keys.d) { myPos.x += mySpeed; moved = true; }
+        if (keys.r) { myPos.y += mySpeed; moved = true; } // 上升
+        if (keys.f) { myPos.y -= mySpeed; moved = true; } // 下降
+
+        // 边界限制
+        myPos.x = Math.max(0, Math.min(mapSize, myPos.x));
+        myPos.y = Math.max(0, Math.min(mapSize, myPos.y));
+        myPos.z = Math.max(0, Math.min(mapSize, myPos.z));
+
+        // 更新主角显示
+        playerMesh.position.copy(myPos);
+        if (aoiHelper) {
+            aoiHelper.position.copy(myPos);
+        }
+
+        // 发送给后端
+        if (moved && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ x: myPos.x, y: myPos.y, z: myPos.z }));
+        }
+
+        // 渲染
+        controls.update();
+        renderer.render(scene, camera);
+    }
+
+    // 窗口大小调整
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+</script>
+</body>
+</html>
