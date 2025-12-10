@@ -1,18 +1,63 @@
-package main
+package two_dim
 
 import (
 	"fmt"
-	"github.com/beijian128/aoi/grid"
 	"github.com/gorilla/websocket"
+	"golang.org/x/exp/rand"
 	"log"
 	"math"
-	"math/rand"
 	"net/http"
+	"os/exec"
 	"sync"
+	"testing"
 	"time"
 )
 
-// 配置常量
+func TestAOI(t *testing.T) {
+	// 1. 初始化 AOI 管理器
+	// 地图 0,0 到 600,600，格子大小 50
+	mgr = NewManager(GridSize, 0, 0, MapSize, MapSize)
+	mgr.RegisterEnterAOIHandler(func(self, other uint32) {
+		fmt.Printf("AOI: %d 进入 %d\n", self, other)
+	})
+	mgr.RegisterLeaveAOIHandler(func(self, other uint32) {
+		fmt.Printf("AOI: %d 离开 %d\n", self, other)
+	})
+	entities = make(map[uint32]*Entity)
+
+	// 2. 添加 NPC (红色，随机移动)
+	for i := 1; i <= 20; i++ {
+		addEntity(uint32(i), float32(rand.Intn(MapSize)), float32(rand.Intn(MapSize)), "npc")
+	}
+
+	// 3. 添加主角 (蓝色 ID: 100)
+	player := addEntity(100, 300, 300, "player")
+
+	// 4. 添加一个静止的“眼/守卫” (绿色 ID: 200)
+	ward := addEntity(200, 111.9, 111, "ward")
+
+	// 5. 让主角订阅眼的视野 (Subscribe 演示)
+	// 这样，在前端你即使离眼很远，也能看到眼周围的连线连接到主角身上（逻辑上）
+	mgr.Subscribe(player.GetID(), ward.GetID())
+
+	// 启动模拟循环
+	go simulationLoop()
+
+	// 启动 Web 服务器
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "index.html")
+	})
+	http.HandleFunc("/ws", handleWS)
+
+	fmt.Printf("服务启动: http://localhost%s\n", Port)
+	fmt.Println("蓝色是主角，绿色是眼(被订阅)，红色是NPC")
+	time.AfterFunc(time.Millisecond*100, func() {
+		cmd := exec.Command("cmd", "/c", "start ", fmt.Sprintf(" http://localhost%s", Port))
+		cmd.Start()
+	})
+	log.Fatal(http.ListenAndServe(Port, nil))
+}
+
 const (
 	MapSize  = 600
 	GridSize = 50
@@ -47,58 +92,14 @@ type LineDTO struct {
 
 // 全局状态
 var (
-	mgr      *grid.Manager
-	entities map[uint32]*grid.Entity
+	mgr      *Manager
+	entities map[uint32]*Entity
 	mu       sync.Mutex
 )
 
-func main() {
-	// 1. 初始化 AOI 管理器
-	// 地图 0,0 到 600,600，格子大小 50
-	mgr = grid.NewManager(GridSize, 0, 0, MapSize, MapSize)
-	mgr.RegisterEnterAOIHandler(func(self, other uint32) {
-		fmt.Printf("AOI: %d 进入 %d\n", self, other)
-	})
-	mgr.RegisterLeaveAOIHandler(func(self, other uint32) {
-		fmt.Printf("AOI: %d 离开 %d\n", self, other)
-	})
-	entities = make(map[uint32]*grid.Entity)
-
-	// 2. 添加 NPC (红色，随机移动)
-	for i := 1; i <= 20; i++ {
-		addEntity(uint32(i), float32(rand.Intn(MapSize)), float32(rand.Intn(MapSize)), "npc")
-	}
-
-	// 3. 添加主角 (蓝色 ID: 100)
-	player := addEntity(100, 300, 300, "player")
-
-	// 4. 添加一个静止的“眼/守卫” (绿色 ID: 200)
-	ward := addEntity(200, 111.9, 111, "ward")
-
-	// 5. 让主角订阅眼的视野 (Subscribe 演示)
-	// 这样，在前端你即使离眼很远，也能看到眼周围的连线连接到主角身上（逻辑上）
-	mgr.Subscribe(player.GetID(), ward.GetID())
-
-	// 启动模拟循环
-	go simulationLoop()
-
-	// 启动 Web 服务器
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "index.html")
-	})
-	http.HandleFunc("/ws", handleWS)
-
-	fmt.Printf("服务启动: http://localhost%s\n", Port)
-	fmt.Println("蓝色是主角，绿色是眼(被订阅)，红色是NPC")
-	log.Fatal(http.ListenAndServe(Port, nil))
-}
-
-func addEntity(id uint32, x, z float32, t string) *grid.Entity {
-	pos := &grid.Position{X: x, Z: z}
-	e := grid.NewEntity(id, pos)
-
-	// Hack: 我们可以把类型存在 Entity 结构体里，但这里为了不改你的代码，
-	// 我们只在转换 JSON 时根据 ID 判断
+func addEntity(id uint32, x, z float32, t string) *Entity {
+	pos := &Position{X: x, Z: z}
+	e := NewEntity(id, pos)
 
 	mgr.AddEntity(e)
 	entities[id] = e
@@ -155,7 +156,7 @@ func simulationLoop() {
 				}
 
 				// 4. 更新 Grid 管理器
-				mgr.MoveEntity(id, &grid.Position{X: newX, Z: newZ})
+				mgr.MoveEntity(id, &Position{X: newX, Z: newZ})
 			}
 		}
 		mu.Unlock()
@@ -182,7 +183,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			// 移动主角 ID 100
 			if _, ok := entities[100]; ok {
-				mgr.MoveEntity(100, &grid.Position{X: msg.X, Z: msg.Z})
+				mgr.MoveEntity(100, &Position{X: msg.X, Z: msg.Z})
 			}
 			mu.Unlock()
 		}
@@ -232,6 +233,7 @@ func buildSnapshot() Snapshot {
 		// 获取 AOI 列表生成连线
 		// 为了不让画面太乱，我们只画 主角(100) 和 眼(200) 看到的物体
 		if id == 100 || id == 200 {
+			rawAoiSet := mgr.findSurroundEntities(e)
 			aoiSet := mgr.GetAOI(id)
 			aoiSet.ForEach(func(targetID uint32) bool {
 				target := entities[targetID]
@@ -244,10 +246,7 @@ func buildSnapshot() Snapshot {
 					// 如果是主角(100)看到了目标，但这个目标实际上是在眼(200)的周围
 					// 这证明了 Subscribe 功能生效
 					if id == 100 {
-						// 简单的距离判断来区分这根线是因为主角自己看到的，还是因为订阅看到的
-						dist := distance(pos, target.GetPos())
-						if dist > GridSize*2*1.414 {
-							// 距离很远却能看到，说明是共享视野
+						if !rawAoiSet.Contains(target) {
 							lineColor = "rgba(255, 255, 0, 0.5)" // 黄色表示共享视野
 						}
 					}
@@ -263,8 +262,4 @@ func buildSnapshot() Snapshot {
 		}
 	}
 	return snap
-}
-
-func distance(p1, p2 *grid.Position) float64 {
-	return math.Sqrt(math.Pow(float64(p1.X-p2.X), 2) + math.Pow(float64(p1.Z-p2.Z), 2))
 }

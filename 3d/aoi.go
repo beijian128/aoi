@@ -1,4 +1,4 @@
-package xlist
+package _d
 
 import (
 	"math"
@@ -174,13 +174,6 @@ func (m *Manager) RemoveEntity(id int64) {
 		m.notifySubscribers(e, targetID, false)
 	}
 
-	// 2. 触发别人丢失该单位 (别人看不见我了)
-	// 这里比较隐晦：因为我们只维护了"我看谁"，没维护"谁看我"的反向索引。
-	// 但 Marker 移除时，如果不手动处理，别人的 ViewCount 不会清零。
-	// 简单做法：由于 Marker 被移除，实际上它在别人的区间里消失了么？
-	// 严格来说，需要像 Move 一样把 Marker 移到无穷远，触发 Leave。
-	// 为了简化代码，这里直接物理断开。更严谨的做法是先 Move 到无穷远再 Remove。
-	// 这里演示 "软移除"：先瞬移到无穷远。
 	m.updateEntity(e, 999999, 999999, 999999)
 
 	// 3. 物理断开

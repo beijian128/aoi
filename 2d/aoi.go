@@ -1,4 +1,4 @@
-package grid
+package two_dim
 
 import (
 	"github.com/beijian128/aoi/common"
