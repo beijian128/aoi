@@ -187,28 +187,68 @@
     // ------------------------------------------------
     // 渲染循环
     // ------------------------------------------------
+
+    // 预先定义向量对象，避免在 animate 循环中重复创建造成 GC 压力
+    const tempForward = new THREE.Vector3();
+    const tempRight = new THREE.Vector3();
+    const tempUp = new THREE.Vector3(0, 1, 0); // 世界的上方向
+
     function animate() {
         requestAnimationFrame(animate);
 
-        // 1. 处理主角移动
         let moved = false;
-        if (keys.w) { myPos.z -= mySpeed; moved = true; }
-        if (keys.s) { myPos.z += mySpeed; moved = true; }
-        if (keys.a) { myPos.x -= mySpeed; moved = true; }
-        if (keys.d) { myPos.x += mySpeed; moved = true; }
+
+        // 1. 获取摄像机的水平朝向 (Forward)
+        // 获取摄像机看向的方向
+        camera.getWorldDirection(tempForward);
+        // 扁平化：去除 Y 轴分量，只在 X-Z 平面移动
+        tempForward.y = 0;
+        tempForward.normalize();
+
+        // 2. 获取摄像机的右侧朝向 (Right)
+        // 向量叉乘：前方 x 上方 = 右方
+        tempRight.crossVectors(tempForward, tempUp).normalize();
+
+        // 3. 根据按键应用移动
+        // W: 前进
+        if (keys.w) {
+            myPos.addScaledVector(tempForward, mySpeed);
+            moved = true;
+        }
+        // S: 后退
+        if (keys.s) {
+            myPos.addScaledVector(tempForward, -mySpeed);
+            moved = true;
+        }
+        // D: 向右
+        if (keys.d) {
+            myPos.addScaledVector(tempRight, mySpeed);
+            moved = true;
+        }
+        // A: 向左
+        if (keys.a) {
+            myPos.addScaledVector(tempRight, -mySpeed);
+            moved = true;
+        }
+
+        // R/F 保持垂直升降 (Y轴独立)
         if (keys.r) { myPos.y += mySpeed; moved = true; } // 上升
         if (keys.f) { myPos.y -= mySpeed; moved = true; } // 下降
 
-        // 边界限制
+        // 4. 边界限制
         myPos.x = Math.max(0, Math.min(mapSize, myPos.x));
         myPos.y = Math.max(0, Math.min(mapSize, myPos.y));
         myPos.z = Math.max(0, Math.min(mapSize, myPos.z));
 
-        // 更新主角显示
+        // 5. 更新主角显示
         playerMesh.position.copy(myPos);
         if (aoiHelper) {
             aoiHelper.position.copy(myPos);
         }
+
+        // 6. (可选) 让 OrbitControls 的旋转中心跟随主角
+        // 如果让摄像机始终盯着主角，取消下面这行的注释：
+        // controls.target.copy(myPos);
 
         // 发送给后端
         if (moved && ws.readyState === WebSocket.OPEN) {
