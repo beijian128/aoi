@@ -237,8 +237,9 @@ func (m *Manager) updateEntity(e *Entity, x, y, z aoi.Float) {
 
 	for axis := 0; axis < 3; axis++ {
 		m.updateMarker(e.Markers[axis][MarkerMin], newVals[axis]-e.Range)
-		m.updateMarker(e.Markers[axis][MarkerMax], newVals[axis]+e.Range)
 		m.updateMarker(e.Markers[axis][MarkerPos], newVals[axis])
+		m.updateMarker(e.Markers[axis][MarkerMax], newVals[axis]+e.Range)
+
 	}
 }
 

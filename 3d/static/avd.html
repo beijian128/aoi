@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AOI Visualizer</title>
+  <style>
+    body { margin: 0; background: #111; color: #fff; font-family: monospace; overflow: hidden; }
+
+    /* UI 面板 */
+    #ui {
+      position: absolute; top: 10px; left: 10px;
+      background: rgba(0,0,0,0.9); padding: 15px; border-radius: 8px;
+      z-index: 10; border: 1px solid #444; min-width: 220px;
+    }
+
+    .control-group { margin-bottom: 12px; border-bottom: 1px solid #333; padding-bottom: 12px; }
+    .control-group:last-child { border-bottom: none; }
+
+    label { display: block; color: #aaa; margin-bottom: 4px; font-size: 12px; }
+    input { background: #222; border: 1px solid #555; color: #fff; padding: 4px 8px; border-radius: 4px; width: 100px; font-family: monospace; }
+    button { background: #333; border: 1px solid #555; color: #eee; padding: 4px 10px; border-radius: 4px; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #555; }
+
+    #status { font-size: 11px; color: #666; margin-top: 5px; }
+    .status-ok { color: #4f4 !important; }
+    .status-err { color: #f44 !important; }
+
+    /* ID 标签 */
+    .label {
+      color: #fff; font-family: sans-serif; font-size: 12px; font-weight: bold;
+      text-shadow: 1px 1px 2px black; pointer-events: none; user-select: none; margin-top: -30px;
+    }
+  </style>
+
+  <script type="importmap">
+    {
+        "imports": {
+            "three": "./three.module.js",
+            "three/addons/": "./jsm/"
+        }
+    }
+  </script>
+</head>
+<body>
+<div id="ui">
+  <h3>AOI Visualizer</h3>
+
+  <!-- 房间连接 -->
+  <div class="control-group">
+    <label>Connection (Room ID):</label>
+    <input type="number" id="roomIdInput" value="101">
+    <button onclick="changeRoom()">Connect</button>
+    <div id="status">Ready</div>
+  </div>
+
+  <!-- ID 选择 -->
+  <div class="control-group">
+    <label>Select Entity ID (Highlight):</label>
+    <input type="number" id="targetIdInput" placeholder="ID...">
+    <button onclick="manualSelect()">Select</button>
+  </div>
+
+  <div id="info">None Selected</div>
+</div>
+
+<script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+  // === Three.js 初始化 ===
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x111111);
+  scene.add(new THREE.GridHelper(200, 50, 0x333333, 0x111111));
+  scene.add(new THREE.AxesHelper(10));
+
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 80, 80);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  const labelRenderer = new CSS2DRenderer();
+  labelRenderer.setSize(window.innerWidth, window.innerHeight);
+  labelRenderer.domElement.style.position = 'absolute';
+  labelRenderer.domElement.style.top = '0px';
+  labelRenderer.domElement.style.pointerEvents = 'none';
+  document.body.appendChild(labelRenderer.domElement);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+  dl.position.set(50, 100, 50);
+  scene.add(dl);
+
+  // === 状态管理 ===
+  const entityMap = new Map();
+  const linesGroup = new THREE.Group();
+  scene.add(linesGroup);
+
+  let selectedID = null;
+  let ws = null;
+  const geoCube = new THREE.BoxGeometry(2, 2, 2);
+  const colorCache = new Map();
+
+  // === 颜色生成算法 (解决全员绿色问题) ===
+  function getIDColor(id) {
+    if (colorCache.has(id)) return colorCache.get(id);
+
+    // 使用 sin(id * large_prime) 打散颜色分布
+    const rand = Math.abs(Math.sin(id * 12345));
+    const hue = Math.floor(rand * 360);
+
+    // HSL: 饱和度85%, 亮度60%
+    const color = new THREE.Color(`hsl(${hue}, 85%, 60%)`);
+
+    colorCache.set(id, color);
+    return color;
+  }
+
+  // === 渲染核心 ===
+  function render(snap) {
+    const validIDs = new Set();
+
+    // 1. 构建反向索引: 谁看见了该NPC?
+    // Map<NpcID, Array<WatcherID>>
+    const seenByMap = new Map();
+
+    snap.rels.forEach(rel => {
+      if (!seenByMap.has(rel.tid)) {
+        seenByMap.set(rel.tid, []);
+      }
+      seenByMap.get(rel.tid).push(rel.wid);
+    });
+
+    // 2. 更新或创建实体
+    snap.ents.forEach(e => {
+      validIDs.add(e.id);
+      let obj = entityMap.get(e.id);
+
+      if (!obj) {
+        const material = new THREE.MeshStandardMaterial({ color: 0x999999 });
+        const mesh = new THREE.Mesh(geoCube, material);
+        mesh.userData = { id: e.id };
+        scene.add(mesh);
+
+        // 视野框
+        const rangeGeo = new THREE.BoxGeometry(e.range[0]*2, e.range[1]*2, e.range[2]*2);
+        const rangeEdges = new THREE.EdgesGeometry(rangeGeo);
+        const rangeBox = new THREE.LineSegments(rangeEdges, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.1 }));
+        scene.add(rangeBox);
+
+        // 文本标签
+        const div = document.createElement('div');
+        div.className = 'label';
+        div.textContent = `ID: ${e.id}`;
+        const label = new CSS2DObject(div);
+        label.position.set(0, 2, 0);
+        mesh.add(label);
+
+        obj = { mesh, rangeBox, label };
+        entityMap.set(e.id, obj);
+      }
+
+      // 更新位置
+      obj.mesh.position.set(e.pos[0], e.pos[1], e.pos[2]);
+      obj.rangeBox.position.copy(obj.mesh.position);
+
+      // --- 颜色与高亮逻辑 ---
+      const hasRange = (e.range[0] > 0.1);
+      obj.rangeBox.visible = hasRange;
+      if(hasRange) {
+        obj.rangeBox.material.opacity = 0.05;
+        obj.rangeBox.material.color.setHex(0xffffff);
+      }
+
+      if (e.id === selectedID) {
+        // 选中状态：强制黄色
+        obj.mesh.material.color.setHex(0xffff00);
+        obj.rangeBox.visible = true;
+        obj.rangeBox.material.opacity = 0.5;
+        obj.rangeBox.material.color.setHex(0xffff00);
+      } else {
+        if (e.type === 'player') {
+          // Player: 显示自己的固定颜色
+          obj.mesh.material.color.copy(getIDColor(e.id));
+        } else {
+          // NPC: 根据看着它的玩家变色
+          const watchers = seenByMap.get(e.id);
+          if (watchers && watchers.length > 0) {
+            let targetColor = null;
+            // 如果当前选中的玩家能看见这个NPC，优先显示选中玩家颜色
+            if (selectedID && watchers.includes(selectedID)) {
+              targetColor = getIDColor(selectedID);
+            } else {
+              // 否则显示第一个看见它的玩家颜色
+              targetColor = getIDColor(watchers[0]);
+            }
+            obj.mesh.material.color.copy(targetColor);
+          } else {
+            // 没人看见: 暗灰色
+            obj.mesh.material.color.setHex(0x333333);
+          }
+        }
+      }
+    });
+
+    // 3. 清理移除
+    for (const [id, obj] of entityMap) {
+      if (!validIDs.has(id)) {
+        scene.remove(obj.mesh);
+        scene.remove(obj.rangeBox);
+        obj.mesh.remove(obj.label);
+        entityMap.delete(id);
+      }
+    }
+
+    drawLines(snap.rels);
+  }
+
+  function drawLines(relations) {
+    linesGroup.clear();
+    if (!selectedID) return;
+
+    relations.forEach(rel => {
+      const wObj = entityMap.get(rel.wid);
+      const tObj = entityMap.get(rel.tid);
+      if (!wObj || !tObj) return;
+
+      // 连线颜色跟随 Watcher
+      const lineColor = getIDColor(rel.wid);
+
+      if (rel.wid === selectedID) {
+        // 我看见别人：实线
+        addLine(wObj.mesh.position, tObj.mesh.position, lineColor, 1.0);
+      } else if (rel.tid === selectedID) {
+        // 别人看见我：虚线效果(半透明)
+        addLine(wObj.mesh.position, tObj.mesh.position, lineColor, 0.3);
+      }
+    });
+  }
+
+  function addLine(p1, p2, color, opacity) {
+    const points = [p1, p2];
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    const material = new THREE.LineBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: opacity
+    });
+    linesGroup.add(new THREE.Line(geometry, material));
+  }
+
+  // === 交互逻辑 ===
+
+  // 更新选中
+  function updateSelection(id) {
+    selectedID = id;
+    const infoDiv = document.getElementById('info');
+    const inputEl = document.getElementById('targetIdInput');
+
+    if (selectedID !== null) {
+      infoDiv.innerText = `Selected ID: ${selectedID}`;
+      inputEl.value = selectedID;
+    } else {
+      infoDiv.innerText = "None Selected";
+      inputEl.value = "";
+    }
+  }
+
+  // 手动输入选择
+  window.manualSelect = function() {
+    const val = document.getElementById('targetIdInput').value;
+    if (val) updateSelection(parseInt(val));
+    else updateSelection(null);
+  }
+  document.getElementById('targetIdInput').addEventListener('keypress', function (e) {
+    if (e.key === 'Enter') manualSelect();
+  });
+
+  // 鼠标点击选择
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  window.addEventListener('click', (e) => {
+    if (e.target.closest('#ui')) return;
+
+    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const meshes = Array.from(entityMap.values()).map(o => o.mesh);
+    const intersects = raycaster.intersectObjects(meshes);
+
+    if (intersects.length > 0) {
+      updateSelection(intersects[0].object.userData.id);
+    } else {
+      updateSelection(null);
+    }
+  });
+
+  // 房间切换
+  window.changeRoom = function() {
+    const roomId = document.getElementById('roomIdInput').value;
+    connect(roomId);
+  }
+
+  function connect(roomId) {
+    if (ws) { ws.close(); ws = null; }
+    const statusEl = document.getElementById('status');
+    statusEl.innerText = "Connecting...";
+    statusEl.className = "";
+
+    ws = new WebSocket(`ws://${location.host}/ws?roomId=${roomId}`);
+    ws.onopen = () => {
+      statusEl.innerText = "Connected";
+      statusEl.className = "status-ok";
+      entityMap.forEach(obj => {
+        scene.remove(obj.mesh);
+        scene.remove(obj.rangeBox);
+        obj.mesh.remove(obj.label);
+      });
+      entityMap.clear();
+      linesGroup.clear();
+    };
+    ws.onclose = () => { statusEl.innerText = "Disconnected"; statusEl.className = "status-err"; };
+    ws.onerror = () => { statusEl.innerText = "Error"; statusEl.className = "status-err"; };
+    ws.onmessage = (evt) => render(JSON.parse(evt.data));
+  }
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    labelRenderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+    labelRenderer.render(scene, camera);
+  }
+  animate();
+
+  // 默认连接
+  connect("101");
+</script>
+</body>
+</html>

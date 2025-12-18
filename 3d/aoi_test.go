@@ -13,7 +13,40 @@ import (
 )
 
 func TestAOI(t *testing.T) {
-	main()
+	rand.Seed(time.Now().UnixNano())
+
+	// 初始化 NPC
+	for i := aoi.EntityID(100); i < 200; i++ {
+		obj := &SimObject{
+			ID: i,
+			X:  rand.Float64() * MapSize,
+			Y:  rand.Float64() * MapSize,
+			Z:  rand.Float64() * MapSize,
+			VX: (rand.Float64() - 0.5) * 2,
+			VY: (rand.Float64() - 0.5) * 2,
+			VZ: (rand.Float64() - 0.5) * 2,
+		}
+		world.Objects[i] = obj
+		world.AoiMgr.AddEntity(i, &aoi.Position{X: aoi.Float(obj.X), Y: aoi.Float(obj.Y), Z: aoi.Float(obj.Z)}, 5)
+	}
+
+	go gameLoop()
+
+	// 设置静态文件服务，将 /static/ 映射到 ./static 目录
+	fs := http.FileServer(http.Dir("./static"))
+
+	// 将 /static/ 路径下的请求交给 FileServer 处理
+	http.Handle("/static/", http.StripPrefix("/static/", fs))
+
+	// 设置根路径 / 重定向到 /static/index.html
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/static/index.html", http.StatusFound)
+	})
+
+	http.HandleFunc("/ws", handleWebSocket)
+
+	log.Println("3D Server started at http://localhost:8081")
+	log.Fatal(http.ListenAndServe(":8081", nil))
 }
 
 type SafeConn struct {
@@ -111,43 +144,6 @@ func (cb *MyAOICallback) triggerSend() {
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
-func main() {
-	rand.Seed(time.Now().UnixNano())
-
-	// 初始化 NPC
-	for i := aoi.EntityID(100); i < 200; i++ {
-		obj := &SimObject{
-			ID: i,
-			X:  rand.Float64() * MapSize,
-			Y:  rand.Float64() * MapSize,
-			Z:  rand.Float64() * MapSize,
-			VX: (rand.Float64() - 0.5) * 2,
-			VY: (rand.Float64() - 0.5) * 2,
-			VZ: (rand.Float64() - 0.5) * 2,
-		}
-		world.Objects[i] = obj
-		world.AoiMgr.AddEntity(i, &aoi.Position{X: aoi.Float(obj.X), Y: aoi.Float(obj.Y), Z: aoi.Float(obj.Z)}, 5)
-	}
-
-	go gameLoop()
-
-	// 设置静态文件服务，将 /static/ 映射到 ./static 目录
-	fs := http.FileServer(http.Dir("./static"))
-
-	// 将 /static/ 路径下的请求交给 FileServer 处理
-	http.Handle("/static/", http.StripPrefix("/static/", fs))
-
-	// 设置根路径 / 重定向到 /static/index.html
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/static/index.html", http.StatusFound)
-	})
-
-	http.HandleFunc("/ws", handleWebSocket)
-
-	log.Println("3D Server started at http://localhost:8081")
-	log.Fatal(http.ListenAndServe(":8081", nil))
-}
-
 func gameLoop() {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -164,6 +160,7 @@ func gameLoop() {
 				obj.VX = -obj.VX
 			}
 			if obj.Y <= 0 || obj.Y >= MapSize {
+				obj.VY = -obj.VY
 				obj.VY = -obj.VY
 			}
 			if obj.Z <= 0 || obj.Z >= MapSize {
